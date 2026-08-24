@@ -8,6 +8,7 @@ command protocol:
     W <addr> <byte> [byte ...]       -> OK
     R <addr> <n>                     -> OK <byte> [byte ...]
     X <addr> <n> <byte> [byte ...]   -> OK <byte> [byte ...]
+    I <addr> <ourAddr> <byte> ...    -> OK <byte> [byte ...]
 
 Auto-detects the right serial port by USB VID:PID rather than assuming
 a fixed /dev/ttyACM number -- the bridge board's MCU-Link debug probe
@@ -26,7 +27,10 @@ USB_PID = 0x0094
 USB_PRODUCT = "MCU VIRTUAL COM DEMO"
 
 BAUDRATE = 115200
-DEFAULT_TIMEOUT_S = 2.0
+# The bridge's "I" command (ipmb_request below) can itself wait several
+# seconds on-device for a slave-mode response before giving up, so the
+# host-side serial read timeout has to comfortably exceed that.
+DEFAULT_TIMEOUT_S = 6.0
 
 
 class BridgeError(Exception):
@@ -108,4 +112,20 @@ class I2CBridge:
         cmd = f"X {addr:02x} {n} {payload}".strip()
         parts = self._split_ok(self._command(cmd),
                                 f"write_read to 0x{addr:02x} failed")
+        return bytes(int(x, 16) for x in parts)
+
+    def ipmb_request(self, addr, our_addr, payload):
+        """Write an IPMB-framed payload to addr, then briefly become an I2C
+        slave at our_addr and capture whatever addr writes back.
+
+        This exists because some I2C targets (e.g. IPMB devices like
+        OpenBIC) don't respond by being read from -- they respond by
+        becoming bus master themselves and writing the response out to
+        the address the request named as the requester. Returns the
+        captured response bytes (see ipmb.parse_response() to decode).
+        """
+        hexstr = " ".join(f"{b:02x}" for b in payload)
+        cmd = f"I {addr:02x} {our_addr:02x} {hexstr}".strip()
+        parts = self._split_ok(self._command(cmd),
+                                f"ipmb_request to 0x{addr:02x} failed")
         return bytes(int(x, 16) for x in parts)
