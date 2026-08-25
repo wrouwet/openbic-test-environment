@@ -4,8 +4,6 @@ it: bus presence, then request-level protocol correctness, then (once
 unblocked -- see the xfail below) full request/response round trips.
 """
 
-import pytest
-
 import ipmb
 from config import CMD_GET_DEVICE_ID, NETFN_APP, OPENBIC_ADDR, OUR_IPMB_ADDR
 
@@ -41,35 +39,25 @@ def test_ipmb_get_device_id_request_accepted(bridge):
     bridge.write(OPENBIC_ADDR, request)  # raises BridgeError on NAK/timeout
 
 
-@pytest.mark.xfail(
-    reason=(
-        "OpenBIC (meta-facebook/mcx-n9xx-evk, full-board-port branch) cannot "
-        "currently send an IPMB response at all on this bus. Two issues were "
-        "found and confirmed in direct collaboration with the session "
-        "developing that firmware (2026-08-24): (1) an initial bug where "
-        "responses were routed to a fixed ipmb_cfg.channel_target_address "
-        "(hardcoded to the BIC's own address) instead of the request's "
-        "src_addr -- this was fixed upstream in common/service/ipmb/ipmb.c; "
-        "(2) after that fix, a deeper, still-unresolved issue: any "
-        "controller-mode i2c_master_write() on flexcomm2_lpi2c2 hangs "
-        "permanently (verified independently via OpenBIC's own shell `i2c "
-        "write` command, bypassing IPMB/our bridge entirely) because that "
-        "bus is *also* registered as an I2C target for IPMB -- looks like a "
-        "Zephyr/NXP LPI2C driver or SoC limitation with simultaneous "
-        "controller+target roles on one bus, not something fixable from "
-        "either side of this bridge. This independently clears our own "
-        "slave-mode RX path (see bridge.py's `L` / firmware's `L` command) "
-        "of suspicion: OpenBIC's write never even reaches the wire."
-    ),
-    strict=True,
-)
 def test_ipmb_get_device_id_response(bridge):
-    """Send a Get Device ID request and capture OpenBIC's response.
+    """Send a Get Device ID request and capture + decode OpenBIC's response.
 
-    strict=True: once OpenBIC's response routing is fixed upstream, this
-    test starts *passing*, which pytest will report as an "unexpected
-    pass" (XPASS) failure -- a deliberate tripwire so we notice the fix
-    landed instead of leaving a stale xfail in place.
+    This was blocked for a while by two real bugs on OpenBIC's side
+    (meta-facebook/mcx-n9xx-evk, full-board-port branch), found and fixed
+    in direct collaboration with the session developing that firmware:
+    responses were initially routed to a fixed address instead of the
+    request's actual source address, and after that fix, a deeper Zephyr/
+    NXP LPI2C driver issue where a bus registered as both I2C controller
+    and target could never actually complete a controller-mode write
+    (fixed by pausing/resuming target mode around the write). Confirmed
+    working end-to-end 2026-08-24.
+
+    One bridge-side bug surfaced along the way too: a standard Get Device
+    ID response with an Auxiliary Firmware Revision field is 22 bytes,
+    and the bridge's original 16- and 20-byte capture buffers both
+    silently truncated it, dropping the trailing checksum byte and making
+    every response look checksum-invalid even once the round trip
+    actually worked (see I2C_CMD_MAX_DATA in the bridge's usb_main.c).
     """
     request = ipmb.build_request(
         responder_addr=OPENBIC_ADDR,
