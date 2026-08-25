@@ -23,3 +23,18 @@ CMD_GET_DEVICE_GUID = 0x08
 # Get Self Test Results, byte 1 (of 2): the two "everything's fine" values
 # per the IPMI spec -- 0x55 (no error) or 0x56 (self-test not implemented).
 SELF_TEST_OK_CODES = (0x55, 0x56)
+
+# 0x57 ("corrupted or inaccessible data or devices") + detail byte 0x36 is
+# ALSO an accepted outcome on this specific board/port, not a failure --
+# confirmed against source with the peer session developing this OpenBIC
+# port (meta-facebook/mcx-n9xx-evk, full-board-port branch), 2026-08-24.
+# APP_GET_SELFTEST_RESULTS() in common/service/ipmi/app_handler.c does two
+# genuinely-expected-to-fail things on this hardware: FRU_read() against
+# the FRU EEPROM's I2C address, which has nothing physically wired there
+# per this board's README (sets bits 2 cannotAccessBmcFruDev + 5
+# internalCorrupt), and a check of is_sdr_not_init, true because no SDR
+# table is populated for this port (sets bits 1 cannotAccessSdrRepo + 4
+# sdrRepoEmpty). bits 1,2,4,5 -> 0b00110110 = 0x36 exactly. If this
+# platform ever gets a real FRU EEPROM and populated SDR table, this
+# detail byte should change and this exception should be revisited.
+SELF_TEST_EXPECTED_ERROR = (0x57, 0x36)

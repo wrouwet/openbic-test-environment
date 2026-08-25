@@ -14,6 +14,7 @@ from config import (
     NETFN_APP,
     OPENBIC_ADDR,
     OUR_IPMB_ADDR,
+    SELF_TEST_EXPECTED_ERROR,
     SELF_TEST_OK_CODES,
 )
 
@@ -129,18 +130,36 @@ def test_get_self_test_results(bridge):
 
     Response data is 2 bytes: byte 1 is the result code, where 0x55 means
     "no error" and 0x56 means "self test function not implemented" -- both
-    are healthy outcomes per the IPMI spec. Anything else (e.g. 0x57,
-    "corrupted or inaccessible data or devices") indicates a real problem
-    and should fail this test.
+    are healthy outcomes per the IPMI spec.
+
+    0x57 ("corrupted or inaccessible data or devices") with detail byte
+    0x36 is ALSO accepted here, specifically on this board/port -- see
+    SELF_TEST_EXPECTED_ERROR's comment in config.py for the full
+    explanation (confirmed against source with the team developing this
+    OpenBIC port): this board has no FRU EEPROM physically wired and no
+    SDR table populated yet, and APP_GET_SELFTEST_RESULTS() honestly
+    reports both as failures. Any *other* result code, or 0x57 with a
+    different detail byte, is a real problem and should fail this test.
     """
     decoded = send_ipmb_command(bridge, NETFN_APP, CMD_GET_SELF_TEST_RESULTS)
     assert decoded["completion_code"] == 0x00
     assert len(decoded["data"]) >= 1, "expected at least a result-code byte"
     result_code = decoded["data"][0]
-    detail = f"; second byte (detail): 0x{decoded['data'][1]:02x}" if len(decoded["data"]) >= 2 else ""
-    assert result_code in SELF_TEST_OK_CODES, (
+    detail_byte = decoded["data"][1] if len(decoded["data"]) >= 2 else None
+    detail = f"; second byte (detail): 0x{detail_byte:02x}" if detail_byte is not None else ""
+
+    if result_code in SELF_TEST_OK_CODES:
+        return
+    expected_code, expected_detail = SELF_TEST_EXPECTED_ERROR
+    if result_code == expected_code and detail_byte == expected_detail:
+        print(f"self-test result 0x{result_code:02x}/0x{detail_byte:02x} -- "
+              f"expected on this board (no FRU EEPROM wired, no SDR table yet)")
+        return
+    raise AssertionError(
         f"self-test result 0x{result_code:02x} is not one of the healthy "
-        f"codes {[hex(c) for c in SELF_TEST_OK_CODES]}{detail}"
+        f"codes {[hex(c) for c in SELF_TEST_OK_CODES]}, and doesn't match "
+        f"the known-expected error 0x{expected_code:02x}/0x{expected_detail:02x} "
+        f"either{detail}"
     )
 
 
