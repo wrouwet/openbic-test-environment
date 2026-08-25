@@ -43,13 +43,23 @@ def test_ipmb_get_device_id_request_accepted(bridge):
 
 @pytest.mark.xfail(
     reason=(
-        "OpenBIC (meta-facebook/mcx-n9xx-evk, full-board-port branch) always "
-        "sends IPMB responses to a fixed ipmb_cfg.channel_target_address "
-        "(hardcoded to its own address, 0x20, in this port's plat_ipmb.c) "
-        "instead of routing to the request's actual src_addr. It will never "
-        "write a response to our requester address until that's fixed "
-        "upstream in common/service/ipmb/ipmb.c. Confirmed 2026-08-24 in "
-        "direct collaboration with the session developing that firmware."
+        "OpenBIC (meta-facebook/mcx-n9xx-evk, full-board-port branch) cannot "
+        "currently send an IPMB response at all on this bus. Two issues were "
+        "found and confirmed in direct collaboration with the session "
+        "developing that firmware (2026-08-24): (1) an initial bug where "
+        "responses were routed to a fixed ipmb_cfg.channel_target_address "
+        "(hardcoded to the BIC's own address) instead of the request's "
+        "src_addr -- this was fixed upstream in common/service/ipmb/ipmb.c; "
+        "(2) after that fix, a deeper, still-unresolved issue: any "
+        "controller-mode i2c_master_write() on flexcomm2_lpi2c2 hangs "
+        "permanently (verified independently via OpenBIC's own shell `i2c "
+        "write` command, bypassing IPMB/our bridge entirely) because that "
+        "bus is *also* registered as an I2C target for IPMB -- looks like a "
+        "Zephyr/NXP LPI2C driver or SoC limitation with simultaneous "
+        "controller+target roles on one bus, not something fixable from "
+        "either side of this bridge. This independently clears our own "
+        "slave-mode RX path (see bridge.py's `L` / firmware's `L` command) "
+        "of suspicion: OpenBIC's write never even reaches the wire."
     ),
     strict=True,
 )

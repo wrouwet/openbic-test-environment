@@ -9,6 +9,7 @@ command protocol:
     R <addr> <n>                     -> OK <byte> [byte ...]
     X <addr> <n> <byte> [byte ...]   -> OK <byte> [byte ...]
     I <addr> <ourAddr> <byte> ...    -> OK <byte> [byte ...]
+    L <ourAddr>                      -> OK <byte> [byte ...]
 
 Auto-detects the right serial port by USB VID:PID rather than assuming
 a fixed /dev/ttyACM number -- the bridge board's MCU-Link debug probe
@@ -128,4 +129,13 @@ class I2CBridge:
         cmd = f"I {addr:02x} {our_addr:02x} {hexstr}".strip()
         parts = self._split_ok(self._command(cmd),
                                 f"ipmb_request to 0x{addr:02x} failed")
+        return bytes(int(x, 16) for x in parts)
+
+    def listen(self, our_addr):
+        """Become an I2C slave at our_addr and capture whatever some other
+        master writes to us, with no write of our own first. Useful for
+        independently testing this path against a master other than the
+        bridge itself. Returns the captured bytes."""
+        parts = self._split_ok(self._command(f"L {our_addr:02x}"),
+                                f"listen at 0x{our_addr:02x} failed")
         return bytes(int(x, 16) for x in parts)
