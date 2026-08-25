@@ -157,21 +157,23 @@ def test_get_watchdog_timer(bridge):
 def test_get_system_guid_unspecified_error(bridge):
     """Get System GUID (cmd 0x37).
 
-    Observed live, 2026-08-24: completion_code 0xFF (CC_UNSPECIFIED_ERROR)
-    -- NOT the 0xC1 CC_INVALID_CMD that every other genuinely-unimplemented
-    command in this sweep returned (see CC_INVALID_CMD's comment in
-    config.py). That's the odd one out, and worth a closer look: it could
-    mean Get System GUID is actually dispatched to a real (if guarded)
-    handler on this platform, similar to how Get Sensor Reading hits a
-    null-config guard rather than a flat "not implemented" -- or it could
-    be a real bug. Documenting the observed behavior here rather than
-    guessing at its cause; asked the peer session to confirm which.
+    Confirmed against source with the peer session, 2026-08-24: this is a
+    real, genuinely-dispatched handler, not an unimplemented command --
+    APP_GET_SYSTEM_GUID() calls get_system_guid() (common/dev/guid.c, the
+    generic __weak default, not overridden by this board port), whose
+    GUID_FAIL_TO_ACCESS and default cases both map to CC_UNSPECIFIED_ERROR
+    (0xFF). There's just no real GUID source wired up on this board, so it
+    always falls through to that failure path. Same shape as Get Sensor
+    Reading (test_sensor.py): a real handler runs, but this platform has
+    nothing behind it yet -- deliberately kept as its own confirmed-
+    expected test rather than folded into the generic not_implemented()
+    bucket, since 0xFF here means something different (and more specific)
+    than the CC_INVALID_CMD (0xC1) that bucket represents.
     """
     decoded = send_ipmb_command(bridge, NETFN_APP, CMD_GET_SYSTEM_GUID)
     assert_completion_code(
         decoded, CC_UNSPECIFIED_ERROR,
-        "observed live 2026-08-24; cause not yet confirmed with the peer session -- "
-        "see this test's docstring"
+        "confirmed against source: real handler, no GUID source wired on this board"
     )
 
 
