@@ -1,11 +1,73 @@
 """Incremental tests for the OpenBIC controller reachable through the
 USB-to-I2C bridge. Each test builds on the guarantees of the ones before
-it: bus presence, then request-level protocol correctness, then (once
-unblocked -- see the xfail below) full request/response round trips.
+it: bus presence, then request-level protocol correctness, then full
+request/response round trips for a growing set of standard IPMI commands.
 """
 
+import itertools
+
 import ipmb
-from config import CMD_GET_DEVICE_ID, NETFN_APP, OPENBIC_ADDR, OUR_IPMB_ADDR
+from config import (
+    CMD_GET_DEVICE_GUID,
+    CMD_GET_DEVICE_ID,
+    CMD_GET_SELF_TEST_RESULTS,
+    NETFN_APP,
+    OPENBIC_ADDR,
+    OUR_IPMB_ADDR,
+    SELF_TEST_OK_CODES,
+)
+
+# IPMB's seq field exists precisely so a requester can match a response to
+# the request it actually answers, rather than assuming responses arrive
+# in order or promptly. That matters here in practice: OpenBIC's response
+# path retries for up to ~2.5s internally, so a *stale* response to an
+# earlier, unrelated request from a previous test (or even a previous test
+# run) can still show up and be captured by a later test's listener if
+# every request reuses the same seq. Each call below gets a fresh one
+# (6-bit field, so wraps at 64).
+_next_seq = itertools.count()
+
+
+def send_ipmb_command(bridge, netfn, cmd, data=b"", max_drain=3):
+    """Build an IPMB request with a fresh sequence number, send it, and
+    return the decoded response that actually answers it.
+
+    Shared by every full-round-trip test below. Sends the request once,
+    then listens for a response, checking it matches (cmd and seq) before
+    accepting it. If a *stale* response to some earlier, unrelated
+    request shows up instead -- observed in practice: OpenBIC's queued
+    response can persist and get delivered opportunistically well after
+    the request that produced it, even across separate test runs, not
+    just the immediately following one -- that one's discarded and we
+    keep listening (up to max_drain extra attempts) for the real match,
+    rather than treating a stale message as a hard failure.
+    """
+    seq = next(_next_seq) % 64
+    request = ipmb.build_request(
+        responder_addr=OPENBIC_ADDR,
+        netfn=netfn,
+        requester_addr=OUR_IPMB_ADDR,
+        seq=seq,
+        cmd=cmd,
+        data=data,
+    )
+    print(f"request bytes: {request.hex(' ')}")
+    bridge.write(OPENBIC_ADDR, request)  # raises BridgeError on NAK/timeout
+
+    for attempt in range(max_drain + 1):
+        response = bridge.listen(OUR_IPMB_ADDR)
+        print(f"response bytes: {response.hex(' ')}")
+        decoded = ipmb.parse_response(response)
+        print(f"decoded: {decoded}")
+        if decoded["cmd"] == cmd and decoded["seq"] == seq:
+            return decoded
+        print(f"discarding stale response (cmd=0x{decoded['cmd']:02x} seq={decoded['seq']}) "
+              f"that doesn't match ours (cmd=0x{cmd:02x} seq={seq}); still listening...")
+
+    raise AssertionError(
+        f"never received a response matching our request (cmd=0x{cmd:02x} seq={seq}) "
+        f"after discarding {max_drain + 1} stale/mismatched ones"
+    )
 
 
 def test_detect_openbic(bridge):
@@ -24,9 +86,8 @@ def test_ipmb_get_device_id_request_accepted(bridge):
     This proves the request half of the round trip end-to-end: our IPMB
     framing/checksum is correct, and OpenBIC's I2C target interface (and,
     per manual confirmation against its console log, its IPMB RX/checksum
-    validation) accepts it. It does not prove a response was sent -- see
-    test_ipmb_get_device_id_response below for why that's a separate,
-    currently-failing step.
+    validation) accepts it. It does not by itself prove a response was
+    sent -- test_ipmb_get_device_id_response below proves that.
     """
     request = ipmb.build_request(
         responder_addr=OPENBIC_ADDR,
@@ -59,17 +120,46 @@ def test_ipmb_get_device_id_response(bridge):
     every response look checksum-invalid even once the round trip
     actually worked (see I2C_CMD_MAX_DATA in the bridge's usb_main.c).
     """
-    request = ipmb.build_request(
-        responder_addr=OPENBIC_ADDR,
-        netfn=NETFN_APP,
-        requester_addr=OUR_IPMB_ADDR,
-        seq=0,
-        cmd=CMD_GET_DEVICE_ID,
-    )
-    response = bridge.ipmb_request(OPENBIC_ADDR, OUR_IPMB_ADDR, request)
-    print(f"response bytes: {response.hex(' ')}")
-
-    decoded = ipmb.parse_response(response)
-    print(f"decoded: {decoded}")
+    decoded = send_ipmb_command(bridge, NETFN_APP, CMD_GET_DEVICE_ID)
     assert decoded["completion_code"] == 0x00
-    assert decoded["cmd"] == CMD_GET_DEVICE_ID
+
+
+def test_get_self_test_results(bridge):
+    """Get Self Test Results (NetFn App, cmd 0x04).
+
+    Response data is 2 bytes: byte 1 is the result code, where 0x55 means
+    "no error" and 0x56 means "self test function not implemented" -- both
+    are healthy outcomes per the IPMI spec. Anything else (e.g. 0x57,
+    "corrupted or inaccessible data or devices") indicates a real problem
+    and should fail this test.
+    """
+    decoded = send_ipmb_command(bridge, NETFN_APP, CMD_GET_SELF_TEST_RESULTS)
+    assert decoded["completion_code"] == 0x00
+    assert len(decoded["data"]) >= 1, "expected at least a result-code byte"
+    result_code = decoded["data"][0]
+    detail = f"; second byte (detail): 0x{decoded['data'][1]:02x}" if len(decoded["data"]) >= 2 else ""
+    assert result_code in SELF_TEST_OK_CODES, (
+        f"self-test result 0x{result_code:02x} is not one of the healthy "
+        f"codes {[hex(c) for c in SELF_TEST_OK_CODES]}{detail}"
+    )
+
+
+def test_get_device_guid(bridge):
+    """Get Device GUID (NetFn App, cmd 0x08).
+
+    Get Device GUID is an *optional* IPMI command -- a compliant BMC/BIC
+    is allowed to not implement it, correctly signaled by completion code
+    0xC1 (Invalid Command), which is a legitimate response and not a
+    malfunction. Confirmed repeatable on this OpenBIC build (2026-08-24):
+    it always returns 0xC1 here, so that's accepted as a valid outcome.
+    If it's ever implemented, response data should be a 16-byte GUID.
+    """
+    decoded = send_ipmb_command(bridge, NETFN_APP, CMD_GET_DEVICE_GUID)
+    if decoded["completion_code"] == 0xC1:
+        print("Get Device GUID not implemented on this platform (0xC1) -- acceptable, it's optional")
+        return
+    assert decoded["completion_code"] == 0x00, f"unexpected completion code: 0x{decoded['completion_code']:02x}"
+    assert len(decoded["data"]) == 16, (
+        f"expected a 16-byte GUID, got {len(decoded['data'])} bytes: "
+        f"{decoded['data'].hex(' ')}"
+    )

@@ -33,6 +33,13 @@ BAUDRATE = 115200
 # host-side serial read timeout has to comfortably exceed that.
 DEFAULT_TIMEOUT_S = 6.0
 
+# See _command()'s docstring: "ERR busy" is a transient condition worth
+# retrying, not a real failure. OpenBIC's own internal response-retry
+# window is already ~2.5s; back-to-back commands (as a test suite does)
+# can catch it mid-settle, so this needs real margin beyond that.
+BUSY_RETRIES = 6
+BUSY_RETRY_DELAY_S = 1.0
+
 
 class BridgeError(Exception):
     """Raised when the bridge reports an error or doesn't respond."""
@@ -68,14 +75,29 @@ class I2CBridge:
     def __exit__(self, *exc_info):
         self.close()
 
-    def _command(self, line):
-        self.ser.reset_input_buffer()
-        self.ser.write((line + "\r\n").encode("ascii"))
-        raw = self.ser.readline()
-        if not raw:
-            raise BridgeError(f"no response from bridge to command {line!r} "
-                               f"(timed out after {self.ser.timeout}s)")
-        return raw.decode("ascii", errors="replace").strip()
+    def _command(self, line, retries=BUSY_RETRIES):
+        """Send one command and return the raw reply line.
+
+        Transparently retries on "ERR busy": observed in practice when
+        an I2C transaction (e.g. an IPMB request/response cycle involving
+        OpenBIC's single-slot response queue and its ~2.5s internal retry
+        window) is issued shortly after a previous one, before the bus
+        has fully settled. This is a transient condition, not a real
+        failure -- unlike "ERR nak" (no device there) or other errors,
+        which are returned immediately without retrying.
+        """
+        for attempt in range(retries + 1):
+            self.ser.reset_input_buffer()
+            self.ser.write((line + "\r\n").encode("ascii"))
+            raw = self.ser.readline()
+            if not raw:
+                raise BridgeError(f"no response from bridge to command {line!r} "
+                                   f"(timed out after {self.ser.timeout}s)")
+            reply = raw.decode("ascii", errors="replace").strip()
+            if reply != "ERR busy" or attempt == retries:
+                return reply
+            time.sleep(BUSY_RETRY_DELAY_S)
+        return reply  # unreachable, satisfies linters
 
     @staticmethod
     def _split_ok(reply, what):
