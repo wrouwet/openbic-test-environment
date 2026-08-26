@@ -72,7 +72,13 @@ python3 -m venv .venv
 ```
 
 That's it — no configuration files to edit, no IP addresses or COM port
-numbers to set. The bridge's serial port is found automatically by USB
+numbers to set.
+
+To also save a copy of the full run to `test_report.txt` (everything
+that printed to the terminal -- pytest's summary plus every test's wire-
+level diagnostics), use `./run_tests.sh` instead of the raw `pytest`
+command above; it's the same run, just teed to a file as well. Not
+committed to the repo (it's a local run artifact, see `.gitignore`). The bridge's serial port is found automatically by USB
 vendor/product ID, not a hardcoded `/dev/ttyACM` number (which one the
 kernel assigns it can change across reconnects, especially if another
 USB-serial device, like the board's own debug probe, is also plugged in
