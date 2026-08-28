@@ -1,11 +1,24 @@
-# OpenBIC Test Environment
+# IPMI Test Environment
 
 A pytest-based test suite, run from a host PC, for exercising an
-[OpenBIC](https://github.com/facebook/OpenBIC) controller over I2C.
+[OpenBIC](https://github.com/facebook/OpenBIC) controller's **IPMI /
+IPMB** interface over I2C, via a USB-to-I2C bridge.
 
-This is meant to grow into the full, long-lived OpenBIC test suite over
-time, covering every peripheral and interface OpenBIC exposes — not just
-the ones a given board port has already implemented. See
+One of a family of sibling suites that each test the same OpenBIC
+controller over the same one I2C bus, named by protocol rather than by
+target (they all test OpenBIC — the protocol is the discriminator):
+
+| Repo | Layer |
+|---|---|
+| **`ipmi-test-environment`** (this repo) | IPMI over IPMB |
+| `mctp-test-environment` | MCTP transport + Control Protocol |
+| `spdm-test-environment` | SPDM (DSP0274) over MCTP |
+| `pldm-test-environment` | PLDM over MCTP |
+| `openbic-discovery` | no assertions — reads every layer and prints an inventory |
+
+This suite is meant to grow into the full, long-lived IPMI test suite
+over time, covering every IPMI command and NetFn OpenBIC exposes — not
+just the ones a given board port has already implemented. See
 ["Tests that document unimplemented features"](#tests-that-document-unimplemented-features)
 below for how that's tracked.
 
