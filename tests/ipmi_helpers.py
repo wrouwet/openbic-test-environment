@@ -7,11 +7,31 @@ growing into the full OpenBIC test suite over time, across many files.
 """
 
 import itertools
+import time
 
 import pytest
 
 import ipmb
+from bridge import BridgeError
 from config import OPENBIC_ADDR, OUR_IPMB_ADDR
+
+# A few ms between transactions. The IPMB (0x20) and MCTP (0x10) targets
+# are two addresses on ONE LPI2C target instance since the 2026-08-27
+# bus consolidation; under zero-gap back-to-back load that single
+# instance (one RX buffer per address, a target<->controller switch per
+# response, NAK-only backpressure) occasionally can't ACK in time and a
+# request NAKs or a response is missed. Harmless (clears next run) but
+# noisy. A real BMC paces sideband polling anyway. Peer-diagnosed
+# 2026-08-28.
+_BUS_PACE_S = 0.008
+
+# Whole-transaction retries on a transient bus glitch (a NAK on the
+# write, or a listen timeout / undecodable capture). The peer confirmed
+# these don't corrupt state -- the same request succeeds moments later
+# -- so one automatic re-send absorbs the shared-bus noise without
+# changing any test's semantics.
+_TX_RETRIES = 3
+_TX_RETRY_GAP_S = 0.05
 
 # IPMB's seq field exists precisely so a requester can match a response to
 # the request it actually answers, rather than assuming responses arrive
@@ -45,6 +65,22 @@ def send_ipmb_command(bridge, netfn, cmd, data=b"", max_drain=3):
     keep listening (up to max_drain extra attempts) for the real match,
     rather than treating a stale message as a hard failure.
     """
+    last_exc = None
+    for _tx in range(_TX_RETRIES + 1):
+        time.sleep(_BUS_PACE_S if _tx == 0 else _TX_RETRY_GAP_S)
+        try:
+            return _send_ipmb_once(bridge, netfn, cmd, data, max_drain)
+        except (BridgeError, ValueError, AssertionError) as exc:
+            last_exc = exc
+            print(f"transient bus glitch ({exc}); re-sending "
+                  f"(attempt {_tx + 2}/{_TX_RETRIES + 1})")
+    raise AssertionError(
+        f"IPMB cmd 0x{cmd:02x} (netfn 0x{netfn:02x}) failed after "
+        f"{_TX_RETRIES + 1} attempts: {last_exc}"
+    )
+
+
+def _send_ipmb_once(bridge, netfn, cmd, data, max_drain):
     seq = next_seq()
     request = ipmb.build_request(
         responder_addr=OPENBIC_ADDR,
